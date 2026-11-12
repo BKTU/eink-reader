@@ -1,6 +1,10 @@
 package tw.bktu.reader
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -8,6 +12,7 @@ import android.graphics.Typeface
 import android.text.TextPaint
 import android.text.TextUtils
 import android.view.View
+import android.view.animation.DecelerateInterpolator
 
 /**
  * 中文排版引擎 + 分頁顯示。
@@ -268,6 +273,88 @@ class ReaderView(context: Context) : View(context) {
         return if (any) top else 0
     }
 
+    // ============================ 翻頁效果 ============================
+
+    private var bmpOld: Bitmap? = null
+    private var bmpNew: Bitmap? = null
+    private var animT = -1f
+    private var animFwd = true
+    private var effect = 0
+    private var animator: ValueAnimator? = null
+    private val edgePaint = Paint().apply { color = Color.GRAY; strokeWidth = 3f }
+    private val fadePaint = Paint()
+
+    private fun snapshot(reuse: Bitmap?): Bitmap {
+        val b = if (reuse != null && reuse.width == width && reuse.height == height) reuse
+        else Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        drawPage(Canvas(b))
+        return b
+    }
+
+    /**
+     * 換頁並播放效果。effect：0 無、1 平移、2 覆蓋、3 淡入、4 上下
+     * onShown 在新頁排好後、拍下畫面前呼叫（用來更新狀態列）
+     */
+    fun showAnimated(from: Int, forward: Boolean, effect: Int, onShown: () -> Unit, onEnd: () -> Unit) {
+        animator?.end()
+        if (effect == 0 || !ready || message != null || width == 0) {
+            showAt(from); onShown(); onEnd(); return
+        }
+        bmpOld = snapshot(bmpOld)
+        showAt(from)
+        onShown()
+        bmpNew = snapshot(bmpNew)
+        animFwd = forward
+        this.effect = effect
+        animT = 0f
+        animator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 260
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animT = it.animatedValue as Float; invalidate() }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    animT = -1f
+                    invalidate()
+                    onEnd()
+                }
+            })
+            start()
+        }
+    }
+
+    private fun drawAnim(canvas: Canvas, old: Bitmap, new: Bitmap) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        val t = animT
+        when (effect) {
+            1 -> if (animFwd) {
+                canvas.drawBitmap(old, -t * w, 0f, null); canvas.drawBitmap(new, (1 - t) * w, 0f, null)
+            } else {
+                canvas.drawBitmap(old, t * w, 0f, null); canvas.drawBitmap(new, -(1 - t) * w, 0f, null)
+            }
+            2 -> if (animFwd) {
+                val x = (1 - t) * w
+                canvas.drawBitmap(old, 0f, 0f, null); canvas.drawBitmap(new, x, 0f, null)
+                canvas.drawLine(x, 0f, x, h, edgePaint)
+            } else {
+                val x = t * w
+                canvas.drawBitmap(new, 0f, 0f, null); canvas.drawBitmap(old, x, 0f, null)
+                canvas.drawLine(x, 0f, x, h, edgePaint)
+            }
+            3 -> {
+                canvas.drawBitmap(old, 0f, 0f, null)
+                fadePaint.alpha = (t * 255).toInt()
+                canvas.drawBitmap(new, 0f, 0f, fadePaint)
+            }
+            4 -> if (animFwd) {
+                canvas.drawBitmap(old, 0f, -t * h, null); canvas.drawBitmap(new, 0f, (1 - t) * h, null)
+            } else {
+                canvas.drawBitmap(old, 0f, t * h, null); canvas.drawBitmap(new, 0f, -(1 - t) * h, null)
+            }
+            else -> canvas.drawBitmap(new, 0f, 0f, null)
+        }
+    }
+
     // ============================ 繪製 ============================
 
     /** 全畫面黑 → 白 → 內容，清除水墨屏殘影 */
@@ -290,6 +377,16 @@ class ReaderView(context: Context) : View(context) {
             canvas.drawColor(fc)
             return
         }
+        val o = bmpOld
+        val n = bmpNew
+        if (animT >= 0f && o != null && n != null) {
+            drawAnim(canvas, o, n)
+            return
+        }
+        drawPage(canvas)
+    }
+
+    private fun drawPage(canvas: Canvas) {
         canvas.drawColor(bgColor)
 
         val msg = message

@@ -18,7 +18,10 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
+import android.widget.ArrayAdapter
 import android.widget.FrameLayout
+import android.widget.ListView
+import android.widget.ScrollView
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
@@ -39,6 +42,7 @@ class ReaderActivity : Activity() {
     private lateinit var topBar: LinearLayout
     private lateinit var bottom: LinearLayout
     private lateinit var sub: LinearLayout
+    private lateinit var subScroll: ScrollView
     private lateinit var seek: SeekBar
     private lateinit var progressTv: TextView
     private lateinit var tabFont: TextView
@@ -171,13 +175,13 @@ class ReaderActivity : Activity() {
         val n = view.nextStart() ?: run { Toast.makeText(this, "已經是最後一頁", Toast.LENGTH_SHORT).show(); return }
         history.add(view.start)
         if (history.size > 300) history.removeAt(0)
-        turnTo(n)
+        turnTo(n, dir = 1)
     }
 
     private fun prevPage() {
         val p = if (history.isNotEmpty()) history.removeAt(history.size - 1) else view.prevStart()
         if (p == null) { Toast.makeText(this, "已經是第一頁", Toast.LENGTH_SHORT).show(); return }
-        turnTo(p)
+        turnTo(p, dir = -1)
     }
 
     private fun jumpTo(offset: Int) {
@@ -185,13 +189,15 @@ class ReaderActivity : Activity() {
         turnTo(offset, forceFlash = true)
     }
 
-    private fun turnTo(offset: Int, forceFlash: Boolean = false) {
-        view.showAt(offset)
-        updateStatus()
-        saveProgress()
-        pageCount++
-        val every = store.refreshEvery
-        if (forceFlash || (every > 0 && pageCount % every == 0)) view.flash()
+    /** dir：1 往後、-1 往前、0 跳轉（不播翻頁效果） */
+    private fun turnTo(offset: Int, forceFlash: Boolean = false, dir: Int = 0) {
+        val effect = if (dir == 0) 0 else store.turnEffect
+        view.showAnimated(offset, dir >= 0, effect, onShown = { updateStatus() }) {
+            saveProgress()
+            pageCount++
+            val every = store.refreshEvery
+            if (forceFlash || (every > 0 && pageCount % every == 0)) view.flash()
+        }
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
@@ -289,7 +295,7 @@ class ReaderActivity : Activity() {
     private fun buildTopBar(): LinearLayout {
         val p = panel()
         val r = Ui.row(this)
-        Ui.addWeighted(r, Ui.button(this, "‹ 書架") {
+        Ui.addWeighted(r, Ui.button(this, "書架") {
             if (isTaskRoot) startActivity(Intent(this, ShelfActivity::class.java))
             finish()
         }, 1f)
@@ -309,11 +315,13 @@ class ReaderActivity : Activity() {
         val p = panel()
 
         sub = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        p.addView(sub, Ui.matchWrap(this))
+        subScroll = ScrollView(this).apply { isVerticalScrollBarEnabled = true }
+        subScroll.addView(sub, ViewGroup.LayoutParams(-1, -2))
+        p.addView(subScroll, Ui.matchWrap(this))
 
         // 進度：上一章 ─ 拖曳條 ─ 下一章
         val pr = Ui.row(this)
-        Ui.addWeighted(pr, Ui.button(this, "‹ 上章", 15f) { prevChapter() }, 1f)
+        Ui.addWeighted(pr, Ui.button(this, "上章", 15f) { prevChapter() }, 1f)
         seek = SeekBar(this).apply {
             max = 1000
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -326,8 +334,8 @@ class ReaderActivity : Activity() {
                 }
             })
         }
-        Ui.addWeighted(pr, seek, 2.6f, 2)
-        Ui.addWeighted(pr, Ui.button(this, "下章 ›", 15f) { nextChapter() }, 1f)
+        Ui.addWeighted(pr, seek, 2.2f, 2)
+        Ui.addWeighted(pr, Ui.button(this, "下章", 15f) { nextChapter() }, 1f)
         p.addView(pr, Ui.matchWrap(this, 4))
 
         progressTv = Ui.label(this, "", 15f).apply {
@@ -376,7 +384,7 @@ class ReaderActivity : Activity() {
         topBar.findViewWithTag<TextView>("title")?.text = title
         val ci = currentChapterIndex()
         val ch = if (ci >= 0) chapters[ci].title + "　" else ""
-        progressTv.text = ch + String.format(Locale.US, "%.1f%%", percent()) + "（點這裡輸入 %）"
+        progressTv.text = ch + String.format(Locale.US, "%.1f%%", percent())
         seek.progress = (percent() * 10).toInt()
         Ui.select(tabFont, subMode == "font" || subMode == "download")
         Ui.select(tabLayout, subMode == "layout")
@@ -386,6 +394,20 @@ class ReaderActivity : Activity() {
             "font" -> buildFontPanel()
             "layout" -> buildLayoutPanel()
             "download" -> buildDownloadPanel()
+        }
+        limitSubHeight()
+    }
+
+    /** 子面板太高時限制高度、改成可捲動，避免把下方按鈕擠出螢幕 */
+    private fun limitSubHeight() {
+        subScroll.layoutParams.height = ViewGroup.LayoutParams.WRAP_CONTENT
+        subScroll.requestLayout()
+        subScroll.post {
+            val maxH = (root.height * 0.5f).toInt()
+            if (sub.height > maxH) {
+                subScroll.layoutParams.height = maxH
+                subScroll.requestLayout()
+            }
         }
     }
 
@@ -431,7 +453,7 @@ class ReaderActivity : Activity() {
             Ui.select(b, store.fontId == f.id)
             Ui.addWeighted(r!!, b)
         }
-        if (fonts.size % 2 == 1) Ui.addWeighted(r!!, View(this))
+        if (fonts.size % 2 == 1) Ui.addWeighted(r!!, Ui.spacer(this))
         sub.addView(Ui.button(this, "⬇ 下載更多字型", 16f) { subMode = "download"; refreshMenu() }, Ui.matchWrap(this, 6))
     }
 
@@ -471,6 +493,7 @@ class ReaderActivity : Activity() {
                         }
                         list.addView(b, Ui.matchWrap(this, 4))
                     }
+                    limitSubHeight()
                 }
             } catch (e: Exception) {
                 runOnUiThread { status.text = "無法連線：" + (e.message ?: e.toString()) }
@@ -518,6 +541,16 @@ class ReaderActivity : Activity() {
         Ui.addWeighted(r, bold)
         Ui.addWeighted(r, indent)
         sub.addView(r, Ui.matchWrap(this, 4))
+
+        sub.addView(Ui.label(this, "翻頁效果（水墨屏建議「無」）", 15f, true), Ui.matchWrap(this, 8))
+        val names = listOf("無", "平移", "覆蓋", "淡入", "上下")
+        val er = Ui.row(this)
+        names.forEachIndexed { i, n ->
+            val b = Ui.button(this, n, 15f) { store.turnEffect = i; refreshMenu() }
+            Ui.select(b, store.turnEffect == i)
+            Ui.addWeighted(er, b, 1f, 2)
+        }
+        sub.addView(er, Ui.matchWrap(this))
     }
 
     // ============================ 跳轉 ============================
@@ -566,56 +599,65 @@ class ReaderActivity : Activity() {
             .show()
     }
 
-    // ============================ 目錄（分頁，不捲動） ============================
-
-    private var tocPage = 0
+    // ============================ 目錄（往下捲動） ============================
 
     private fun showToc() {
         if (chapters.isEmpty()) {
             Toast.makeText(this, "這本書找不到章節標題", Toast.LENGTH_SHORT).show()
             return
         }
-        tocPage = currentChapterIndex().coerceAtLeast(0) / tocRows()
-        renderToc()
-    }
-
-    private fun tocRows(): Int = ((root.height - Ui.dp(this, 150)) / Ui.dp(this, 52)).coerceIn(4, 30)
-
-    private fun renderToc() {
-        toc?.let { root.removeView(it) }
-        val rows = tocRows()
-        val pages = (chapters.size + rows - 1) / rows
-        tocPage = tocPage.coerceIn(0, maxOf(0, pages - 1))
         val cur = currentChapterIndex()
 
         val p = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.WHITE)
-            val pad = Ui.dp(this@ReaderActivity, 14)
+            val pad = Ui.dp(this@ReaderActivity, 10)
             setPadding(pad, pad, pad, pad)
             isClickable = true
         }
-        p.addView(Ui.label(this, "目錄　${tocPage + 1} / $pages　（共 ${chapters.size} 章）", 19f, true), Ui.matchWrap(this))
+        val head = Ui.row(this)
+        Ui.addWeighted(head, Ui.button(this, "關閉") { closeToc() }, 1f)
+        Ui.addWeighted(head, Ui.label(this, "目錄（${chapters.size} 章）", 18f, true).apply {
+            gravity = Gravity.CENTER
+            maxLines = 1
+        }, 2f)
+        lateinit var lv: ListView
+        Ui.addWeighted(head, Ui.button(this, "目前") {
+            lv.setSelection(maxOf(0, currentChapterIndex() - 3))
+        }, 1f)
+        p.addView(head, Ui.matchWrap(this))
 
-        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val from = tocPage * rows
-        for (i in from until minOf(chapters.size, from + rows)) {
-            val c = chapters[i]
-            val tv = Ui.label(this, (if (i == cur) "▶ " else "　") + c.title, 18f, i == cur).apply {
-                maxLines = 1
-                ellipsize = TextUtils.TruncateAt.END
-                gravity = Gravity.CENTER_VERTICAL
-                setOnClickListener { closeToc(); jumpTo(c.offset) }
+        val rowH = Ui.dp(this, 50)
+        val adapter = object : ArrayAdapter<Chapter>(this, 0, chapters) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val tv = (convertView as? TextView) ?: TextView(context).apply {
+                    textSize = 18f
+                    setTextColor(Color.BLACK)
+                    gravity = Gravity.CENTER_VERTICAL
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
+                    setPadding(Ui.dp(context, 6), 0, Ui.dp(context, 6), 0)
+                    minHeight = rowH
+                }
+                val c = chapters[position]
+                val isCur = position == cur
+                tv.text = (if (isCur) "▶ " else "") + c.title
+                tv.typeface = if (isCur) android.graphics.Typeface.DEFAULT_BOLD else android.graphics.Typeface.DEFAULT
+                return tv
             }
-            list.addView(tv, LinearLayout.LayoutParams(-1, Ui.dp(this, 52)))
         }
-        p.addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
-
-        val nav = Ui.row(this)
-        Ui.addWeighted(nav, Ui.button(this, "上一頁") { if (tocPage > 0) { tocPage--; renderToc() } })
-        Ui.addWeighted(nav, Ui.button(this, "下一頁") { if (tocPage < pages - 1) { tocPage++; renderToc() } })
-        Ui.addWeighted(nav, Ui.button(this, "關閉") { closeToc() })
-        p.addView(nav, Ui.matchWrap(this))
+        lv = ListView(this).apply {
+            this.adapter = adapter
+            isFastScrollEnabled = true
+            isFastScrollAlwaysVisible = chapters.size > 40
+            divider = android.graphics.drawable.ColorDrawable(Color.LTGRAY)
+            dividerHeight = 1
+            isVerticalFadingEdgeEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            setOnItemClickListener { _, _, pos, _ -> closeToc(); jumpTo(chapters[pos].offset) }
+        }
+        p.addView(lv, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = Ui.dp(this@ReaderActivity, 6) })
+        lv.setSelection(maxOf(0, cur - 3))
 
         root.addView(p, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         toc = p

@@ -49,6 +49,11 @@ class Store(context: Context) {
         get() = p.getString("fontId", "sys:sans") ?: "sys:sans"
         set(v) = p.edit().putString("fontId", v).apply()
 
+    /** 翻頁效果：0 無、1 平移、2 覆蓋、3 淡入、4 上下 */
+    var turnEffect: Int
+        get() = p.getInt("effect", 0)
+        set(v) = p.edit().putInt("effect", v).apply()
+
     var lastDir: String
         get() = p.getString("lastDir", "") ?: ""
         set(v) = p.edit().putString("lastDir", v).apply()

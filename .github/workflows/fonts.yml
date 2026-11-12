@@ -1,0 +1,35 @@
+name: Fonts
+
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/workflows/fonts.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  fonts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download fonts from npm (Google Fonts, OFL)
+        run: |
+          mkdir work fonts
+          cd work
+          for p in noto-serif-tc noto-sans-tc lxgw-wenkai-tc; do
+            npm pack "@expo-google-fonts/$p" || echo "skip $p"
+          done
+          for t in *.tgz; do mkdir "${t%.tgz}"; tar xzf "$t" -C "${t%.tgz}"; done
+          find . -name '*.ttf' | sort
+          for pat in 'NotoSerifTC_500Medium' 'NotoSerifTC_600SemiBold' 'NotoSansTC_400Regular' 'NotoSansTC_500Medium' 'LXGWWenKaiTC_400Regular' 'LXGWWenKaiTC_700Bold'; do
+            find . -name "${pat}.ttf" -exec cp {} ../fonts/ \;
+          done
+          ls -la ../fonts
+
+      - name: Publish release "fonts"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete fonts -y --cleanup-tag -R "${{ github.repository }}" || true
+          gh release create fonts fonts/*.ttf -R "${{ github.repository }}" \
+            --title "字型" --notes "閱讀器可下載的字型（Google Fonts，SIL OFL 1.1 授權）" --latest=false

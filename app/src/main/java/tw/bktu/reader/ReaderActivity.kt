@@ -10,6 +10,7 @@ import android.os.BatteryManager
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.text.InputType
+import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
@@ -19,6 +20,7 @@ import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import java.io.File
@@ -31,27 +33,27 @@ class ReaderActivity : Activity() {
     private lateinit var store: Store
     private lateinit var root: FrameLayout
     private lateinit var view: ReaderView
-    private lateinit var menu: LinearLayout
     private var toc: LinearLayout? = null
+
+    // 選單：上方工具列 + 下方面板
+    private lateinit var topBar: LinearLayout
+    private lateinit var bottom: LinearLayout
+    private lateinit var sub: LinearLayout
+    private lateinit var seek: SeekBar
+    private lateinit var progressTv: TextView
+    private lateinit var tabFont: TextView
+    private lateinit var tabLayout: TextView
+    private lateinit var tabNight: TextView
+    private var subMode = ""          // "", "font", "layout", "download"
+    private var menuOpen = false
 
     private var key = ""
     private var title = ""
     private var chapters: List<Chapter> = emptyList()
     private var loaded = false
     private var pageCount = 0
-    private val history = ArrayList<Int>()      // 往後翻時記錄起點，往前翻可精準回到原頁
+    private val history = ArrayList<Int>()
     private val timeFmt = SimpleDateFormat("HH:mm", Locale.TAIWAN)
-
-    // 設定面板上的數值文字
-    private lateinit var fontTv: TextView
-    private lateinit var spacingTv: TextView
-    private lateinit var marginTv: TextView
-    private lateinit var boldTv: TextView
-    private lateinit var indentTv: TextView
-    private lateinit var nightTv: TextView
-    private lateinit var paraTv: TextView
-    private lateinit var refreshTv: TextView
-    private lateinit var infoTv: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -62,9 +64,12 @@ class ReaderActivity : Activity() {
         view = ReaderView(this)
         applySettings()
         root.addView(view, FrameLayout.LayoutParams(-1, -1))
-        menu = buildMenu()
-        menu.visibility = View.GONE
-        root.addView(menu, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+        topBar = buildTopBar()
+        root.addView(topBar, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+        bottom = buildBottom()
+        root.addView(bottom, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+        topBar.visibility = View.GONE
+        bottom.visibility = View.GONE
         setContentView(root)
 
         view.setOnTouchListener { v, ev ->
@@ -78,7 +83,6 @@ class ReaderActivity : Activity() {
             }
         }
 
-        // 從哪裡開啟：書架／資料夾瀏覽（path）或其他 App（URI）
         val path = intent.getStringExtra("path")
         val uri = intent.data
         when {
@@ -87,6 +91,7 @@ class ReaderActivity : Activity() {
             uri != null -> { key = uri.toString(); title = displayName(uri) }
             else -> { finish(); return }
         }
+        title = title.removeSuffix(".txt").removeSuffix(".TXT")
         load()
     }
 
@@ -134,19 +139,13 @@ class ReaderActivity : Activity() {
                     chapters = ch
                     loaded = true
                     val off = store.offset(key).coerceIn(0, maxOf(0, text.length - 1))
-                    if (view.ready) {
-                        view.showAt(off)
-                        updateStatus()
-                        saveProgress()
-                    } else {
-                        view.post { view.showAt(off); updateStatus(); saveProgress() }
-                    }
+                    val show = { view.showAt(off); updateStatus(); saveProgress() }
+                    if (view.ready) show() else view.post { show() }
                 }
             } catch (e: Throwable) {
                 runOnUiThread {
                     view.message = "無法開啟檔案（點一下返回）"
                     view.invalidate()
-                    loaded = false
                     Toast.makeText(this, e.message ?: e.toString(), Toast.LENGTH_LONG).show()
                 }
             }
@@ -158,7 +157,7 @@ class ReaderActivity : Activity() {
     private fun onTap(x: Float, y: Float, w: Int, h: Int) {
         if (!loaded) { if (view.message != "載入中…") finish(); return }
         if (toc != null) return
-        if (menu.visibility == View.VISIBLE) { hideMenu(); return }
+        if (menuOpen) { hideMenu(); return }
         val inCenterX = x > w / 3f && x < w * 2 / 3f
         when {
             inCenterX && y > h / 4f && y < h * 3 / 4f -> showMenu()
@@ -196,39 +195,40 @@ class ReaderActivity : Activity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (loaded && toc == null && menu.visibility != View.VISIBLE) {
+        if (loaded && toc == null && !menuOpen) {
             when (keyCode) {
                 KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_PAGE_DOWN,
                 KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_SPACE -> { nextPage(); return true }
                 KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_PAGE_UP,
                 KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_UP -> { prevPage(); return true }
+                KeyEvent.KEYCODE_MENU -> { showMenu(); return true }
             }
         }
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             if (toc != null) { closeToc(); return true }
-            if (menu.visibility == View.VISIBLE) { hideMenu(); return true }
+            if (menuOpen) { hideMenu(); return true }
         }
         return super.onKeyDown(keyCode, event)
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
-        // 吃掉音量鍵放開事件，避免跳出音量條
         if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP) return true
         return super.onKeyUp(keyCode, event)
     }
 
     // ============================ 狀態與進度 ============================
 
-    private fun percent(): Float {
+    private fun percentOf(pos: Int): Float {
         val len = view.text.length
-        return if (len <= 1) 100f else (view.end.toFloat() / len * 100f).coerceIn(0f, 100f)
+        return if (len <= 1) 100f else (pos.toFloat() / len * 100f).coerceIn(0f, 100f)
     }
 
-    private fun currentChapterIndex(): Int {
+    private fun percent(): Float = percentOf(view.end)
+
+    private fun chapterIndexAt(pos: Int): Int {
         var lo = 0
         var hi = chapters.size - 1
         var ans = -1
-        val pos = view.start
         while (lo <= hi) {
             val mid = (lo + hi) / 2
             if (chapters[mid].offset <= pos) { ans = mid; lo = mid + 1 } else hi = mid - 1
@@ -236,14 +236,14 @@ class ReaderActivity : Activity() {
         return ans
     }
 
-    private fun battery(): Int {
-        return try {
-            val i = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-            val level = i?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
-            val scale = i?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
-            if (level < 0) -1 else level * 100 / scale
-        } catch (e: Exception) { -1 }
-    }
+    private fun currentChapterIndex(): Int = chapterIndexAt(view.start)
+
+    private fun battery(): Int = try {
+        val i = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val level = i?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale = i?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
+        if (level < 0) -1 else level * 100 / scale
+    } catch (e: Exception) { -1 }
 
     private fun updateStatus() {
         val ci = currentChapterIndex()
@@ -260,112 +260,295 @@ class ReaderActivity : Activity() {
         store.touch(Book(key, title, percent(), System.currentTimeMillis()))
     }
 
-    // ============================ 選單 ============================
-
     private fun applySettings() {
         val px = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, store.fontSp.toFloat(), resources.displayMetrics)
         view.configure(px, store.spacing10 / 10f, Ui.dp(this, store.marginDp), store.bold,
-            store.indent, store.paraGap10 / 10f, store.night)
+            store.indent, store.paraGap10 / 10f, store.night, Fonts.typeface(store.fontId))
         if (::root.isInitialized) root.setBackgroundColor(view.bgColor)
     }
 
+    /** 設定改變後重新排版（保留目前位置） */
     private fun reflow() {
         applySettings()
         history.clear()
         if (loaded && view.ready) view.showAt(view.start)
         updateStatus()
-        refreshMenuValues()
-        view.flash()
+        refreshMenu()
     }
 
-    private fun buildMenu(): LinearLayout {
-        val p = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
-            background = Ui.border(this@ReaderActivity, 3, 0)
-            val pad = Ui.dp(this@ReaderActivity, 10)
-            setPadding(pad, pad, pad, pad)
-            isClickable = true   // 不讓點擊穿透到閱讀畫面
+    // ============================ 選單 ============================
+
+    private fun panel(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = Ui.border(this@ReaderActivity, 2, 0)
+        val pad = Ui.dp(this@ReaderActivity, 10)
+        setPadding(pad, pad, pad, pad)
+        isClickable = true    // 不讓點擊穿透到閱讀畫面
+    }
+
+    private fun buildTopBar(): LinearLayout {
+        val p = panel()
+        val r = Ui.row(this)
+        Ui.addWeighted(r, Ui.button(this, "‹ 書架") {
+            if (isTaskRoot) startActivity(Intent(this, ShelfActivity::class.java))
+            finish()
+        }, 1f)
+        val t = Ui.label(this, "", 17f, true).apply {
+            gravity = Gravity.CENTER
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            tag = "title"
         }
-        infoTv = Ui.label(this, "", 16f, true).apply { maxLines = 2 }
-        p.addView(infoTv, Ui.matchWrap(this))
-
-        val r1 = Ui.row(this)
-        Ui.addWeighted(r1, Ui.button(this, "書架") { if (isTaskRoot) startActivity(Intent(this, ShelfActivity::class.java)); finish() })
-        Ui.addWeighted(r1, Ui.button(this, "目錄") { hideMenu(); showToc() })
-        Ui.addWeighted(r1, Ui.button(this, "跳到 %") { askJump() })
-        Ui.addWeighted(r1, Ui.button(this, "刷新") { hideMenu(); view.flash() })
-        p.addView(r1, Ui.matchWrap(this, 6))
-
-        fontTv = Ui.label(this, "")
-        p.addView(settingRow("字體", fontTv,
-            { store.fontSp = (store.fontSp - 1).coerceAtLeast(10); reflow() },
-            { store.fontSp = (store.fontSp + 1).coerceAtMost(48); reflow() }), Ui.matchWrap(this, 4))
-        spacingTv = Ui.label(this, "")
-        p.addView(settingRow("行距", spacingTv,
-            { store.spacing10 = (store.spacing10 - 1).coerceAtLeast(10); reflow() },
-            { store.spacing10 = (store.spacing10 + 1).coerceAtMost(30); reflow() }), Ui.matchWrap(this))
-        marginTv = Ui.label(this, "")
-        p.addView(settingRow("邊距", marginTv,
-            { store.marginDp = (store.marginDp - 2).coerceAtLeast(0); reflow() },
-            { store.marginDp = (store.marginDp + 2).coerceAtMost(60); reflow() }), Ui.matchWrap(this))
-        paraTv = Ui.label(this, "")
-        p.addView(settingRow("段距", paraTv,
-            { store.paraGap10 = (store.paraGap10 - 1).coerceAtLeast(0); reflow() },
-            { store.paraGap10 = (store.paraGap10 + 1).coerceAtMost(20); reflow() }), Ui.matchWrap(this))
-        refreshTv = Ui.label(this, "")
-        p.addView(settingRow("殘影刷新", refreshTv,
-            { store.refreshEvery = (store.refreshEvery - 1).coerceAtLeast(0); refreshMenuValues() },
-            { store.refreshEvery = (store.refreshEvery + 1).coerceAtMost(30); refreshMenuValues() }), Ui.matchWrap(this))
-
-        val r2 = Ui.row(this)
-        boldTv = Ui.button(this, "") { store.bold = !store.bold; reflow() }
-        Ui.addWeighted(r2, boldTv)
-        indentTv = Ui.button(this, "") { store.indent = !store.indent; reflow() }
-        Ui.addWeighted(r2, indentTv)
-        nightTv = Ui.button(this, "") { store.night = !store.night; reflow() }
-        Ui.addWeighted(r2, nightTv)
-        p.addView(r2, Ui.matchWrap(this, 6))
-        val r3 = Ui.row(this)
-        Ui.addWeighted(r3, Ui.button(this, "關閉選單") { hideMenu() })
-        p.addView(r3, Ui.matchWrap(this))
+        Ui.addWeighted(r, t, 2.2f)
+        Ui.addWeighted(r, Ui.button(this, "目錄") { hideMenu(flash = false); showToc() }, 1f)
+        p.addView(r, Ui.matchWrap(this))
         return p
     }
 
-    private fun settingRow(name: String, valueTv: TextView, minus: () -> Unit, plus: () -> Unit): LinearLayout {
-        val r = Ui.row(this)
-        val n = Ui.label(this, name, 17f, true)
-        Ui.addWeighted(r, n, 1.2f)
-        Ui.addWeighted(r, Ui.button(this, "－", 20f, minus), 1f)
-        valueTv.gravity = Gravity.CENTER
-        valueTv.textSize = 17f
-        Ui.addWeighted(r, valueTv, 1.4f)
-        Ui.addWeighted(r, Ui.button(this, "＋", 20f, plus), 1f)
-        return r
+    private fun buildBottom(): LinearLayout {
+        val p = panel()
+
+        sub = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        p.addView(sub, Ui.matchWrap(this))
+
+        // 進度：上一章 ─ 拖曳條 ─ 下一章
+        val pr = Ui.row(this)
+        Ui.addWeighted(pr, Ui.button(this, "‹ 上章", 15f) { prevChapter() }, 1f)
+        seek = SeekBar(this).apply {
+            max = 1000
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar?, v: Int, fromUser: Boolean) {
+                    if (fromUser) progressTv.text = "放開跳到 " + String.format(Locale.US, "%.1f%%", v / 10f)
+                }
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) {
+                    jumpPercent((s?.progress ?: 0) / 10f)
+                }
+            })
+        }
+        Ui.addWeighted(pr, seek, 2.6f, 2)
+        Ui.addWeighted(pr, Ui.button(this, "下章 ›", 15f) { nextChapter() }, 1f)
+        p.addView(pr, Ui.matchWrap(this, 4))
+
+        progressTv = Ui.label(this, "", 15f).apply {
+            gravity = Gravity.CENTER
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            setOnClickListener { askJump() }
+        }
+        p.addView(progressTv, Ui.matchWrap(this, 2))
+
+        // 主要功能
+        val tabs = Ui.row(this)
+        tabFont = Ui.button(this, "字型") { toggleSub("font") }
+        tabLayout = Ui.button(this, "排版") { toggleSub("layout") }
+        tabNight = Ui.button(this, "夜間") { store.night = !store.night; reflow(); view.flash() }
+        Ui.addWeighted(tabs, tabFont)
+        Ui.addWeighted(tabs, tabLayout)
+        Ui.addWeighted(tabs, tabNight)
+        Ui.addWeighted(tabs, Ui.button(this, "刷新") { hideMenu() })
+        p.addView(tabs, Ui.matchWrap(this, 4))
+        return p
     }
 
-    private fun refreshMenuValues() {
-        fontTv.text = "${store.fontSp}"
-        spacingTv.text = String.format(Locale.US, "%.1f", store.spacing10 / 10f)
-        marginTv.text = "${store.marginDp}"
-        refreshTv.text = if (store.refreshEvery == 0) "關閉" else "每 ${store.refreshEvery} 頁"
-        boldTv.text = if (store.bold) "粗體：開" else "粗體：關"
-        indentTv.text = if (store.indent) "縮排：開" else "縮排：關"
-        nightTv.text = if (store.night) "夜間：開" else "夜間：關"
-        paraTv.text = String.format(Locale.US, "%.1f", store.paraGap10 / 10f)
-        val ci = currentChapterIndex()
-        val ch = if (ci >= 0) chapters[ci].title + "　" else ""
-        infoTv.text = title + "\n" + ch + String.format(Locale.US, "%.1f%%", percent())
+    private fun toggleSub(mode: String) {
+        subMode = if (subMode == mode) "" else mode
+        refreshMenu()
     }
 
     private fun showMenu() {
-        refreshMenuValues()
-        menu.visibility = View.VISIBLE
+        subMode = ""
+        menuOpen = true
+        refreshMenu()
+        topBar.visibility = View.VISIBLE
+        bottom.visibility = View.VISIBLE
     }
 
-    private fun hideMenu() {
-        menu.visibility = View.GONE
-        view.flash()   // 選單蓋過的區域容易留殘影，順便刷新
+    private fun hideMenu(flash: Boolean = true) {
+        menuOpen = false
+        topBar.visibility = View.GONE
+        bottom.visibility = View.GONE
+        if (flash) view.flash()   // 選單蓋過的區域容易留殘影
+    }
+
+    private fun refreshMenu() {
+        if (!menuOpen && toc == null) return
+        topBar.findViewWithTag<TextView>("title")?.text = title
+        val ci = currentChapterIndex()
+        val ch = if (ci >= 0) chapters[ci].title + "　" else ""
+        progressTv.text = ch + String.format(Locale.US, "%.1f%%", percent()) + "（點這裡輸入 %）"
+        seek.progress = (percent() * 10).toInt()
+        Ui.select(tabFont, subMode == "font" || subMode == "download")
+        Ui.select(tabLayout, subMode == "layout")
+        Ui.select(tabNight, store.night)
+        sub.removeAllViews()
+        when (subMode) {
+            "font" -> buildFontPanel()
+            "layout" -> buildLayoutPanel()
+            "download" -> buildDownloadPanel()
+        }
+    }
+
+    private fun stepper(name: String, value: String, minus: () -> Unit, plus: () -> Unit): LinearLayout {
+        val r = Ui.row(this)
+        Ui.addWeighted(r, Ui.label(this, name, 17f, true), 1.3f)
+        Ui.addWeighted(r, Ui.button(this, "－", 20f) { minus(); reflow() }, 1f)
+        Ui.addWeighted(r, Ui.label(this, value, 18f, true).apply { gravity = Gravity.CENTER }, 1.4f)
+        Ui.addWeighted(r, Ui.button(this, "＋", 20f) { plus(); reflow() }, 1f)
+        return r
+    }
+
+    private fun buildFontPanel() {
+        sub.addView(stepper("字體大小", "${store.fontSp}",
+            { store.fontSp = (store.fontSp - 1).coerceAtLeast(10) },
+            { store.fontSp = (store.fontSp + 1).coerceAtMost(60) }), Ui.matchWrap(this))
+
+        // 快速大小
+        val quick = Ui.row(this)
+        for ((label, size) in listOf("小" to 16, "中" to 20, "大" to 24, "特大" to 30)) {
+            val b = Ui.button(this, label, 16f) { store.fontSp = size; reflow() }
+            Ui.select(b, store.fontSp == size)
+            Ui.addWeighted(quick, b)
+        }
+        sub.addView(quick, Ui.matchWrap(this))
+
+        sub.addView(Ui.label(this, "字型（長按已下載的可刪除）", 15f, true), Ui.matchWrap(this, 8))
+        val fonts = Fonts.local(this)
+        var r: LinearLayout? = null
+        fonts.forEachIndexed { i, f ->
+            if (i % 2 == 0) {
+                val nr = Ui.row(this)
+                sub.addView(nr, Ui.matchWrap(this))
+                r = nr
+            }
+            val b = Ui.button(this, f.name, 16f) { store.fontId = f.id; reflow() }.apply {
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+                // 用該字型顯示名稱，選之前就看得到樣子
+                typeface = Fonts.typeface(f.id)
+                if (f.id.startsWith("file:")) setOnLongClickListener { askDeleteFont(f); true }
+            }
+            Ui.select(b, store.fontId == f.id)
+            Ui.addWeighted(r!!, b)
+        }
+        if (fonts.size % 2 == 1) Ui.addWeighted(r!!, View(this))
+        sub.addView(Ui.button(this, "⬇ 下載更多字型", 16f) { subMode = "download"; refreshMenu() }, Ui.matchWrap(this, 6))
+    }
+
+    private fun askDeleteFont(f: FontItem) {
+        AlertDialog.Builder(this)
+            .setTitle("刪除字型？")
+            .setMessage(f.name)
+            .setPositiveButton("刪除") { _, _ ->
+                Fonts.delete(this, f.id)
+                if (store.fontId == f.id) store.fontId = "sys:sans"
+                reflow()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun buildDownloadPanel() {
+        val status = Ui.label(this, "讀取字型清單中…", 16f)
+        sub.addView(status, Ui.matchWrap(this))
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        sub.addView(list, Ui.matchWrap(this))
+        sub.addView(Ui.button(this, "‹ 返回字型", 16f) { subMode = "font"; refreshMenu() }, Ui.matchWrap(this, 6))
+
+        Thread {
+            try {
+                val remote = Fonts.remote()
+                runOnUiThread {
+                    if (subMode != "download") return@runOnUiThread
+                    status.text = if (remote.isEmpty()) "目前沒有可下載的字型" else "點一下下載（需要網路）"
+                    for (rf in remote) {
+                        val done = Fonts.isDownloaded(this, rf)
+                        val mb = String.format(Locale.US, "%.1f MB", rf.size / 1048576f)
+                        val b = Ui.button(this, (if (done) "✓ " else "") + rf.name + "　" + mb, 16f) {}
+                        b.setOnClickListener {
+                            if (Fonts.isDownloaded(this, rf)) { status.text = rf.name + " 已下載，請回字型選擇"; return@setOnClickListener }
+                            downloadFont(rf, status, b)
+                        }
+                        list.addView(b, Ui.matchWrap(this, 4))
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread { status.text = "無法連線：" + (e.message ?: e.toString()) }
+            }
+        }.start()
+    }
+
+    private fun downloadFont(rf: RemoteFont, status: TextView, btn: TextView) {
+        status.text = "下載 ${rf.name}… 0%"
+        Thread {
+            try {
+                val f = Fonts.download(this, rf) { p -> runOnUiThread { status.text = "下載 ${rf.name}… $p%" } }
+                runOnUiThread {
+                    btn.text = "✓ " + rf.name
+                    status.text = "${rf.name} 下載完成，已套用"
+                    store.fontId = "file:" + f.absolutePath
+                    applySettings()
+                    if (loaded && view.ready) view.showAt(view.start)
+                    updateStatus()
+                }
+            } catch (e: Exception) {
+                runOnUiThread { status.text = "下載失敗：" + (e.message ?: e.toString()) }
+            }
+        }.start()
+    }
+
+    private fun buildLayoutPanel() {
+        sub.addView(stepper("行距", String.format(Locale.US, "%.1f", store.spacing10 / 10f),
+            { store.spacing10 = (store.spacing10 - 1).coerceAtLeast(10) },
+            { store.spacing10 = (store.spacing10 + 1).coerceAtMost(30) }), Ui.matchWrap(this))
+        sub.addView(stepper("段距", String.format(Locale.US, "%.1f", store.paraGap10 / 10f),
+            { store.paraGap10 = (store.paraGap10 - 1).coerceAtLeast(0) },
+            { store.paraGap10 = (store.paraGap10 + 1).coerceAtMost(20) }), Ui.matchWrap(this))
+        sub.addView(stepper("邊距", "${store.marginDp}",
+            { store.marginDp = (store.marginDp - 2).coerceAtLeast(0) },
+            { store.marginDp = (store.marginDp + 2).coerceAtMost(60) }), Ui.matchWrap(this))
+        sub.addView(stepper("殘影刷新", if (store.refreshEvery == 0) "關閉" else "每${store.refreshEvery}頁",
+            { store.refreshEvery = (store.refreshEvery - 1).coerceAtLeast(0) },
+            { store.refreshEvery = (store.refreshEvery + 1).coerceAtMost(30) }), Ui.matchWrap(this))
+        val r = Ui.row(this)
+        val bold = Ui.button(this, "粗體") { store.bold = !store.bold; reflow() }
+        val indent = Ui.button(this, "首行縮排") { store.indent = !store.indent; reflow() }
+        Ui.select(bold, store.bold)
+        Ui.select(indent, store.indent)
+        Ui.addWeighted(r, bold)
+        Ui.addWeighted(r, indent)
+        sub.addView(r, Ui.matchWrap(this, 4))
+    }
+
+    // ============================ 跳轉 ============================
+
+    private fun jumpPercent(pct: Float) {
+        var off = (view.text.length * (pct.coerceIn(0f, 100f) / 100f)).toInt()
+        val nl = view.text.lastIndexOf('\n', maxOf(0, off - 1))
+        if (nl >= 0 && off - nl < 2000) off = nl + 1
+        jumpTo(off)
+        refreshMenu()
+    }
+
+    private fun prevChapter() {
+        if (chapters.isEmpty()) { Toast.makeText(this, "這本書沒有章節", Toast.LENGTH_SHORT).show(); return }
+        val ci = currentChapterIndex()
+        val target = when {
+            ci < 0 -> 0
+            view.start > chapters[ci].offset + 50 -> chapters[ci].offset   // 先回到本章開頭
+            ci > 0 -> chapters[ci - 1].offset
+            else -> 0
+        }
+        jumpTo(target)
+        refreshMenu()
+    }
+
+    private fun nextChapter() {
+        if (chapters.isEmpty()) { Toast.makeText(this, "這本書沒有章節", Toast.LENGTH_SHORT).show(); return }
+        val ci = currentChapterIndex()
+        if (ci + 1 >= chapters.size) { Toast.makeText(this, "已經是最後一章", Toast.LENGTH_SHORT).show(); return }
+        jumpTo(chapters[ci + 1].offset)
+        refreshMenu()
     }
 
     private fun askJump() {
@@ -378,17 +561,7 @@ class ReaderActivity : Activity() {
         AlertDialog.Builder(this)
             .setTitle("跳到百分比")
             .setView(et)
-            .setPositiveButton("跳轉") { _, _ ->
-                val v = et.text.toString().toFloatOrNull()
-                if (v != null) {
-                    var off = (view.text.length * (v.coerceIn(0f, 100f) / 100f)).toInt()
-                    // 對齊到段落開頭，讀起來比較自然
-                    val nl = view.text.lastIndexOf('\n', maxOf(0, off - 1))
-                    if (nl >= 0 && off - nl < 2000) off = nl + 1
-                    hideMenu()
-                    jumpTo(off)
-                }
-            }
+            .setPositiveButton("跳轉") { _, _ -> et.text.toString().toFloatOrNull()?.let { jumpPercent(it) } }
             .setNegativeButton("取消", null)
             .show()
     }
@@ -402,16 +575,11 @@ class ReaderActivity : Activity() {
             Toast.makeText(this, "這本書找不到章節標題", Toast.LENGTH_SHORT).show()
             return
         }
-        val ci = currentChapterIndex().coerceAtLeast(0)
-        tocPage = ci / tocRows()
+        tocPage = currentChapterIndex().coerceAtLeast(0) / tocRows()
         renderToc()
     }
 
-    private fun tocRows(): Int {
-        val rowH = Ui.dp(this, 52)
-        val avail = root.height - Ui.dp(this, 140)
-        return (avail / rowH).coerceIn(4, 30)
-    }
+    private fun tocRows(): Int = ((root.height - Ui.dp(this, 150)) / Ui.dp(this, 52)).coerceIn(4, 30)
 
     private fun renderToc() {
         toc?.let { root.removeView(it) }
@@ -420,14 +588,14 @@ class ReaderActivity : Activity() {
         tocPage = tocPage.coerceIn(0, maxOf(0, pages - 1))
         val cur = currentChapterIndex()
 
-        val panel = LinearLayout(this).apply {
+        val p = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.WHITE)
             val pad = Ui.dp(this@ReaderActivity, 14)
             setPadding(pad, pad, pad, pad)
             isClickable = true
         }
-        panel.addView(Ui.label(this, "目錄　${tocPage + 1} / $pages", 20f, true), Ui.matchWrap(this))
+        p.addView(Ui.label(this, "目錄　${tocPage + 1} / $pages　（共 ${chapters.size} 章）", 19f, true), Ui.matchWrap(this))
 
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val from = tocPage * rows
@@ -435,21 +603,22 @@ class ReaderActivity : Activity() {
             val c = chapters[i]
             val tv = Ui.label(this, (if (i == cur) "▶ " else "　") + c.title, 18f, i == cur).apply {
                 maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
                 gravity = Gravity.CENTER_VERTICAL
                 setOnClickListener { closeToc(); jumpTo(c.offset) }
             }
             list.addView(tv, LinearLayout.LayoutParams(-1, Ui.dp(this, 52)))
         }
-        panel.addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
+        p.addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
 
         val nav = Ui.row(this)
         Ui.addWeighted(nav, Ui.button(this, "上一頁") { if (tocPage > 0) { tocPage--; renderToc() } })
         Ui.addWeighted(nav, Ui.button(this, "下一頁") { if (tocPage < pages - 1) { tocPage++; renderToc() } })
         Ui.addWeighted(nav, Ui.button(this, "關閉") { closeToc() })
-        panel.addView(nav, Ui.matchWrap(this))
+        p.addView(nav, Ui.matchWrap(this))
 
-        root.addView(panel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        toc = panel
+        root.addView(p, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        toc = p
     }
 
     private fun closeToc() {

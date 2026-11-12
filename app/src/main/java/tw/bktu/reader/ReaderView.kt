@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Typeface
 import android.text.TextPaint
 import android.text.TextUtils
 import android.view.View
@@ -40,7 +41,8 @@ class ReaderView(context: Context) : View(context) {
     var onLayoutReady: (() -> Unit)? = null
 
     fun configure(fontPx: Float, spacingMul: Float, marginPx: Int, bold: Boolean,
-                  indent: Boolean, paraGapEm: Float, night: Boolean) {
+                  indent: Boolean, paraGapEm: Float, night: Boolean, typeface: Typeface) {
+        paint.typeface = typeface
         paint.textSize = fontPx
         paint.isFakeBoldText = bold
         statusPaint.textSize = fontPx * 0.62f

@@ -45,6 +45,10 @@ class Store(context: Context) {
         get() = p.getBoolean("night", false)
         set(v) = p.edit().putBoolean("night", v).apply()
 
+    var fontId: String
+        get() = p.getString("fontId", "sys:sans") ?: "sys:sans"
+        set(v) = p.edit().putString("fontId", v).apply()
+
     var lastDir: String
         get() = p.getString("lastDir", "") ?: ""
         set(v) = p.edit().putString("lastDir", v).apply()

@@ -39,6 +39,12 @@ object Ui {
         setOnClickListener { onClick() }
     }
 
+    /** 選取中的按鈕：反白（黑底白字） */
+    fun select(tv: TextView, selected: Boolean) {
+        tv.background = border(tv.context, 2, 6, if (selected) Color.BLACK else Color.WHITE)
+        tv.setTextColor(if (selected) Color.WHITE else Color.BLACK)
+    }
+
     fun row(ctx: Context) = LinearLayout(ctx).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL

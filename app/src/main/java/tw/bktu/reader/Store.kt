@@ -32,6 +32,19 @@ class Store(context: Context) {
         get() = p.getInt("refresh", 6)
         set(v) = p.edit().putInt("refresh", v).apply()
 
+    var indent: Boolean
+        get() = p.getBoolean("indent", true)
+        set(v) = p.edit().putBoolean("indent", v).apply()
+
+    /** 段落間距，單位 0.1 字高 */
+    var paraGap10: Int
+        get() = p.getInt("paraGap", 5)
+        set(v) = p.edit().putInt("paraGap", v).apply()
+
+    var night: Boolean
+        get() = p.getBoolean("night", false)
+        set(v) = p.edit().putBoolean("night", v).apply()
+
     var lastDir: String
         get() = p.getString("lastDir", "") ?: ""
         set(v) = p.edit().putString("lastDir", v).apply()

@@ -80,23 +80,51 @@ object TextLoader {
         return s.trimEnd() + "\n"
     }
 
-    private val CHAPTER = Regex(
-        "(?m)^[ \\t\\u3000]*(" +
-            "第[0-9０-９零〇一二兩两三四五六七八九十百千萬万]{1,9}[章回節节卷集部篇話话幕](?:[ \\t\\u3000:：、.．-].{0,30})?" +
-            "|(?:序章|楔子|序言|前言|引子|後記|后记|尾聲|尾声|番外)(?:[ \\t\\u3000:：、].{0,30})?" +
-            "|(?:Chapter|CHAPTER) ?[0-9IVXLC]+.{0,30}" +
-        ")[ \\t\\u3000]*$"
+    private const val SP = "[ \\t\\u3000]*"
+    private const val NUM = "[0-9０-９零〇一二兩两三四五六七八九十百千萬万壹貳贰參叁肆伍陸陆柒捌玖拾佰仟]"
+
+    /** 主要規則：第X章／回／節／卷…、序章、楔子、番外、Chapter N、卷一… */
+    private val PRIMARY = Regex(
+        "(?m)^" + SP + "(?:[【\\[〔「]" + SP + ")?" +
+        "(" +
+            "(?:正文|VIP|vip)?" + SP + "第" + SP + NUM + "{1,12}" + SP + "[章回節节卷集部篇話话幕折讲講]" + "[^\\n]{0,40}" +
+            "|(?:序章|序幕|楔子|序言|序|前言|引子|引言|後記|后记|尾聲|尾声|終章|终章|番外|外傳|外传|完結感言|完结感言|作者的話|作者的话)(?:[ \\t\\u3000:：、·.．\\-—][^\\n]{0,30}|" + NUM + "{1,4}[^\\n]{0,30})?" +
+            "|(?:Chapter|CHAPTER|chapter)" + SP + "[0-9IVXLC]+[^\\n]{0,40}" +
+            "|卷" + SP + NUM + "{1,4}(?:[ \\t\\u3000:：、][^\\n]{0,30})?" +
+        ")" +
+        SP + "(?:[】\\]〕」]" + SP + ")?$"
     )
 
-    fun chapters(text: String): List<Chapter> {
+    /** 備用規則（主要規則抓不到時才用）：「1、標題」「一、標題」「001 標題」 */
+    private val FALLBACK = Regex(
+        "(?m)^" + SP + "(" +
+            "[0-9０-９]{1,4}" + SP + "[、.．]" + SP + "[^\\n]{1,30}" +
+            "|[一二三四五六七八九十百]{1,4}" + SP + "、" + SP + "[^\\n]{1,30}" +
+            "|[0-9]{2,4}[ \\t\\u3000]+[^\\n]{1,30}" +
+        ")" + SP + "$"
+    )
+
+    private fun scan(text: String, re: Regex): List<Chapter> {
         val out = ArrayList<Chapter>()
-        for (m in CHAPTER.findAll(text)) {
-            val title = m.groupValues[1].trim()
-            if (title.isEmpty() || title.length > 40) continue
+        for (m in re.findAll(text)) {
+            val title = m.groupValues[1].trim().trimEnd('】', ']', '〕', '」').trim()
+            if (title.isEmpty() || title.length > 45) continue
+            // 太像內文的長句（含句號、很多逗號）就跳過
+            if (title.endsWith("。") || title.count { it == '，' } >= 2) continue
             if (out.isNotEmpty() && out.last().title == title) continue
-            out.add(Chapter(title, m.range.first))
-            if (out.size >= 8000) break
+            // 行首位置（對齊段落開頭）
+            val ls = text.lastIndexOf('\n', m.range.first).let { if (it < 0) 0 else it + 1 }
+            val off = if (ls <= m.range.first) maxOf(ls, m.range.first) else m.range.first
+            out.add(Chapter(title, off))
+            if (out.size >= 10000) break
         }
         return out
+    }
+
+    fun chapters(text: String): List<Chapter> {
+        val primary = scan(text, PRIMARY)
+        if (primary.size >= 3) return primary
+        val fb = scan(text, FALLBACK)
+        return if (fb.size > primary.size) (primary + fb).sortedBy { it.offset } else primary
     }
 }

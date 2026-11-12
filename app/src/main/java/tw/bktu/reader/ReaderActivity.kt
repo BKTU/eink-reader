@@ -47,6 +47,9 @@ class ReaderActivity : Activity() {
     private lateinit var spacingTv: TextView
     private lateinit var marginTv: TextView
     private lateinit var boldTv: TextView
+    private lateinit var indentTv: TextView
+    private lateinit var nightTv: TextView
+    private lateinit var paraTv: TextView
     private lateinit var refreshTv: TextView
     private lateinit var infoTv: TextView
 
@@ -261,7 +264,9 @@ class ReaderActivity : Activity() {
 
     private fun applySettings() {
         val px = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, store.fontSp.toFloat(), resources.displayMetrics)
-        view.configure(px, store.spacing10 / 10f, Ui.dp(this, store.marginDp), store.bold)
+        view.configure(px, store.spacing10 / 10f, Ui.dp(this, store.marginDp), store.bold,
+            store.indent, store.paraGap10 / 10f, store.night)
+        if (::root.isInitialized) root.setBackgroundColor(view.bgColor)
     }
 
     private fun reflow() {
@@ -304,6 +309,10 @@ class ReaderActivity : Activity() {
         p.addView(settingRow("邊距", marginTv,
             { store.marginDp = (store.marginDp - 2).coerceAtLeast(0); reflow() },
             { store.marginDp = (store.marginDp + 2).coerceAtMost(60); reflow() }), Ui.matchWrap(this))
+        paraTv = Ui.label(this, "")
+        p.addView(settingRow("段距", paraTv,
+            { store.paraGap10 = (store.paraGap10 - 1).coerceAtLeast(0); reflow() },
+            { store.paraGap10 = (store.paraGap10 + 1).coerceAtMost(20); reflow() }), Ui.matchWrap(this))
         refreshTv = Ui.label(this, "")
         p.addView(settingRow("殘影刷新", refreshTv,
             { store.refreshEvery = (store.refreshEvery - 1).coerceAtLeast(0); refreshMenuValues() },
@@ -312,8 +321,14 @@ class ReaderActivity : Activity() {
         val r2 = Ui.row(this)
         boldTv = Ui.button(this, "") { store.bold = !store.bold; reflow() }
         Ui.addWeighted(r2, boldTv)
-        Ui.addWeighted(r2, Ui.button(this, "關閉選單") { hideMenu() })
+        indentTv = Ui.button(this, "") { store.indent = !store.indent; reflow() }
+        Ui.addWeighted(r2, indentTv)
+        nightTv = Ui.button(this, "") { store.night = !store.night; reflow() }
+        Ui.addWeighted(r2, nightTv)
         p.addView(r2, Ui.matchWrap(this, 6))
+        val r3 = Ui.row(this)
+        Ui.addWeighted(r3, Ui.button(this, "關閉選單") { hideMenu() })
+        p.addView(r3, Ui.matchWrap(this))
         return p
     }
 
@@ -335,6 +350,9 @@ class ReaderActivity : Activity() {
         marginTv.text = "${store.marginDp}"
         refreshTv.text = if (store.refreshEvery == 0) "關閉" else "每 ${store.refreshEvery} 頁"
         boldTv.text = if (store.bold) "粗體：開" else "粗體：關"
+        indentTv.text = if (store.indent) "縮排：開" else "縮排：關"
+        nightTv.text = if (store.night) "夜間：開" else "夜間：關"
+        paraTv.text = String.format(Locale.US, "%.1f", store.paraGap10 / 10f)
         val ci = currentChapterIndex()
         val ch = if (ci >= 0) chapters[ci].title + "　" else ""
         infoTv.text = title + "\n" + ch + String.format(Locale.US, "%.1f%%", percent())
